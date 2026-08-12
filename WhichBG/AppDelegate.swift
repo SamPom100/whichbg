@@ -11,46 +11,55 @@ import Foundation
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     
-    // The statusBarItem must continue to exist after the applicationDidFinishLaunch
-    // function finishes execution. Otherwise, the item is promptly removed from the status bar.
-    var statusBarItem : NSStatusItem?
+    var statusBarItem: NSStatusItem?
     var outsideClickHandler: GlobalEventMonitor?
     let popOver = NSPopover()
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
-        // Using -1 instead of NSVariableStatusItemLength
-        // See: http://stackoverflow.com/a/24026327/987185
-        statusBarItem = NSStatusBar.system().statusItem(withLength: -1);
-        statusBarItem!.image = NSImage(named: "StatusIcon");
+        // Start live OS log streaming and wallpaper cache in background
+        WallpaperStore.shared.startListening()
         
-        // Make the Icons behave nicely on dark mode.
-        statusBarItem!.image?.isTemplate = true;
+        statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
-        // statusBarItem!.action = Selector("statusIconClicked:");
-        statusBarItem!.action = #selector(AppDelegate.togglePopover(_:))
+        if let button = statusBarItem?.button {
+            let statusIconPath = Bundle.main.path(forResource: "StatusIcon", ofType: "png") ?? ""
+            if let image = NSImage(named: "StatusIcon") ?? NSImage(contentsOfFile: statusIconPath) {
+                image.size = NSSize(width: 18, height: 18)
+                image.isTemplate = true
+                button.image = image
+            } else if #available(macOS 11.0, *) {
+                button.image = NSImage(systemSymbolName: "photo.on.rectangle", accessibilityDescription: "WhichBG")
+            } else {
+                button.title = "WhichBG"
+            }
+            button.action = #selector(togglePopover(_:))
+            button.target = self
+        }
         
-        // This is the Popover we'll show:
-        popOver.contentViewController = DesktopPictureViewController(nibName: "DesktopPictureViewController", bundle: nil)
+        let viewController = DesktopPictureViewController()
+        popOver.contentViewController = viewController
+        popOver.behavior = .transient
         
-        outsideClickHandler = GlobalEventMonitor(mask: [.leftMouseDown, .rightMouseDown]) { [unowned self] event in
-            if self.popOver.isShown {
-                self.closePopover(event)
+        outsideClickHandler = GlobalEventMonitor(mask: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            if let strongSelf = self, strongSelf.popOver.isShown {
+                strongSelf.closePopover(event)
             }
         }
         outsideClickHandler?.start()
     }
     
-    func showPopover(_ sender: AnyObject?) {
-        if let button = statusBarItem!.button {
-            popOver.show(relativeTo: button.bounds, of: button, preferredEdge: NSRectEdge.minY)
+    func showPopover(_ sender: Any?) {
+        if let button = statusBarItem?.button {
+            (popOver.contentViewController as? DesktopPictureViewController)?.loadWallpapers()
+            popOver.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
     
-    func closePopover(_ sender: AnyObject?) {
+    func closePopover(_ sender: Any?) {
         popOver.performClose(sender)
     }
     
-    @IBAction func togglePopover(_ sender: NSStatusItem) {
+    @objc func togglePopover(_ sender: Any?) {
         if popOver.isShown {
             closePopover(sender)
             outsideClickHandler?.stop()
@@ -58,12 +67,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             showPopover(popOver)
             outsideClickHandler?.start()
         }
-        
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
-        print("Exiting.");
+        print("Exiting WhichBG.")
     }
-
 }
-

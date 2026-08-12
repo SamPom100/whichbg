@@ -9,11 +9,11 @@
 import Cocoa
 
 open class GlobalEventMonitor {
-    fileprivate var monitor: AnyObject?
-    fileprivate let mask: NSEventMask
-    fileprivate let handler: (NSEvent?) -> ()
+    fileprivate var monitor: Any?
+    fileprivate let mask: NSEvent.EventTypeMask
+    fileprivate let handler: (NSEvent?) -> Void
     
-    public init(mask: NSEventMask, handler: @escaping (NSEvent?) -> ()) {
+    public init(mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent?) -> Void) {
         self.mask = mask
         self.handler = handler
     }
@@ -23,13 +23,15 @@ open class GlobalEventMonitor {
     }
     
     open func start() {
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: handler) as AnyObject?
+        if monitor == nil {
+            monitor = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: handler)
+        }
     }
     
     open func stop() {
-        if monitor != nil {
-            NSEvent.removeMonitor(monitor!)
-            monitor = nil
+        if let monitor = monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
         }
     }
 }

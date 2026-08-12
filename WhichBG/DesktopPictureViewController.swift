@@ -8,143 +8,204 @@
 
 import Cocoa
 import Foundation
-import SQLite
 
-class DesktopPictureViewController: NSViewController {
+class DesktopPictureViewController: NSViewController, NSCollectionViewDataSource, NSCollectionViewDelegateFlowLayout {
     
-    var errorString: String?;
-
-    @IBAction func exitAction(_ sender: Any) {
-        NSApplication.shared().terminate(self)
+    var errorString: String?
+    var wallpaperPaths: [String] = []
+    
+    private var scrollView: NSScrollView?
+    private var collectionView: NSCollectionView?
+    private var errorLabelView: NSTextField?
+    
+    @objc func exitAction(_ sender: Any) {
+        NSApplication.shared.terminate(self)
     }
     
-    @IBAction func helpAction(_ sender: AnyObject) {
-        NSWorkspace.shared().open(URL(string: "https://github.com/musically-ut/WhichBG")!)
-    }
-    
-    func refreshFiles() -> [String]? {
-        // Magic brought to you by SO:
-        // http://stackoverflow.com/questions/30954492/how-to-get-the-path-to-the-current-workspace-screens-wallpaper-on-osx
-        
-        let paths = NSSearchPathForDirectoriesInDomains(.applicationSupportDirectory, .userDomainMask, true)
-        if let appSupp = paths.first as String? {
-            let dbPath = URL(fileURLWithPath: appSupp).appendingPathComponent("Dock/desktoppicture.db")
-            if isFile(dbPath.path) {
-                if let db = try? Connection(dbPath.path) {
-                    
-                    let value = Expression<String?>("value")
-
-                    // TODO: This function does no error handling.
-                    // Now by personal obseravtion, there are three kinds of entries in the `data` table.
-                    //   1. Folders (e.g. ~/Pictures)
-                    //   2. Numbers (e.g. 1)
-                    //   3. Absolute paths (e.g. /Library/Desktop Pictures/Yosemite.jpg)
-                    //   4. Relative filenames (e.g. 49 - Ei3XhvZ.jpg)
-                    //
-                    // Our strategy is to figure out the absolute paths and all possible combination of the folders and pictures
-                    // which exist and are valid image files. We'll show those items on a Grid and allow the user to open them
-                    // in finder using a single click.
-                    if let data = try? db.prepare(Table("data")) {
-                        var filesFolders : [String] = []
-                        for row in data {
-                            if let fileFolder = row[value] {
-                                filesFolders.append(fileFolder)
-                            }
-                        }
-                        return findAllExistingFilesIn(filesFolders)
-                    } else {
-                        errorString = "No table 'data' found in the DB."
-                        return nil
-                    }
-                } else {
-                    errorString = "Unable to connect to DB."
-                    return nil
-                }
-            } else {
-                errorString = "The database file was not found."
-                return nil
-            }
-        } else {
-            errorString = "No Application Support directory was returned. Exiting."
-            return nil
+    @objc func helpAction(_ sender: Any) {
+        if let url = URL(string: "https://github.com/SamPom100/whichbg") {
+            NSWorkspace.shared.open(url)
         }
     }
     
-    @IBOutlet weak var collectionView: NSScrollView!
-    @IBOutlet weak var imageCollectionView: NSCollectionView!
+    @objc func refreshAction(_ sender: Any) {
+        loadWallpapers()
+    }
     
-    var errorLabel : NSTextView?
+    override func loadView() {
+        let popoverWidth: CGFloat = 440
+        let popoverHeight: CGFloat = 520
+        
+        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: popoverWidth, height: popoverHeight))
+        containerView.wantsLayer = true
+        containerView.layer?.backgroundColor = NSColor.clear.cgColor
+        
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 36, width: popoverWidth, height: popoverHeight - 36))
+        scrollView.autoresizingMask = [.width, .height]
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        
+        let flowLayout = NSCollectionViewFlowLayout()
+        let cardWidth = popoverWidth - 24
+        flowLayout.itemSize = NSSize(width: cardWidth, height: round(cardWidth * (9.0 / 16.0)))
+        flowLayout.minimumInteritemSpacing = 12
+        flowLayout.minimumLineSpacing = 14
+        flowLayout.sectionInset = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        
+        let cv = NSCollectionView(frame: scrollView.bounds)
+        cv.collectionViewLayout = flowLayout
+        cv.dataSource = self
+        cv.delegate = self
+        cv.isSelectable = true
+        cv.backgroundColors = [.clear]
+        cv.register(WallpaperItem.self, forItemWithIdentifier: NSUserInterfaceItemIdentifier("WallpaperItem"))
+        
+        scrollView.documentView = cv
+        containerView.addSubview(scrollView)
+        self.scrollView = scrollView
+        self.collectionView = cv
+        
+        // Bottom bar
+        let bottomBar = NSView(frame: NSRect(x: 0, y: 0, width: popoverWidth, height: 36))
+        bottomBar.wantsLayer = true
+        containerView.addSubview(bottomBar)
+        
+        let quitButton = NSButton(title: "Quit", target: self, action: #selector(exitAction))
+        quitButton.bezelStyle = .rounded
+        quitButton.frame = NSRect(x: (popoverWidth - 70) / 2, y: 5, width: 70, height: 26)
+        bottomBar.addSubview(quitButton)
+        
+        let helpButton = NSButton(frame: NSRect(x: popoverWidth - 32, y: 6, width: 24, height: 24))
+        helpButton.bezelStyle = .helpButton
+        helpButton.title = ""
+        helpButton.target = self
+        helpButton.action = #selector(helpAction)
+        bottomBar.addSubview(helpButton)
+        
+        let refreshButton = NSButton(title: "Refresh", target: self, action: #selector(refreshAction))
+        refreshButton.bezelStyle = .inline
+        refreshButton.frame = NSRect(x: 10, y: 6, width: 75, height: 24)
+        bottomBar.addSubview(refreshButton)
+        
+        self.view = containerView
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleWallpaperUpdate),
+            name: WallpaperStore.didUpdateNotification,
+            object: nil
+        )
+        
+        loadWallpapers()
+    }
+    
+    @objc private func handleWallpaperUpdate() {
+        loadWallpapers()
+    }
     
     override func viewWillAppear() {
         super.viewWillAppear()
-        
-        if (errorLabel != nil) {
-            self.errorLabel!.removeFromSuperview()
-            self.errorLabel = nil
-        }
-        
-        if let files = self.refreshFiles() {
-            self.imageCollectionView.isHidden = false
-            
-            // Silently ignoring the files for which data cannot be loaded
-            let imagesAndPaths = files.map { ($0, NSImage(contentsOfFile: $0)) }.filter { $0.1 != nil }.map { ($0.0, $0.1!) }
-            
-            let contentWidth = self.collectionView.contentSize.width
-            let gutter = CGFloat(5)
-            
-            self.imageCollectionView.minItemSize = NSMakeSize(contentWidth, 1.0 / (16.0 / 10.0) * contentWidth + gutter)
-            self.imageCollectionView.itemPrototype = WallpaperItem()
-            self.imageCollectionView.isSelectable = true
-            self.imageCollectionView.content = imagesAndPaths.map { $0.1 }
-
-            for (idx, imgPathTuple) in imagesAndPaths.enumerated() {
-                let item = self.imageCollectionView.item(at: idx) as? WallpaperItem
-                item!.setImage(imgPathTuple.1, path: imgPathTuple.0)
-            }
+        loadWallpapers()
+    }
+    
+    func loadWallpapers() {
+        loadViewIfNeeded()
+        let files = WallpaperStore.shared.getWallpapers()
+        if files.isEmpty {
+            self.wallpaperPaths = []
+            showError("No wallpaper files found.")
         } else {
-            self.imageCollectionView.isHidden = true
-            let errorLabel = NSTextView(frame: self.collectionView.frame)
-            errorLabel.drawsBackground = false
-            errorLabel.alignCenter(nil)
-            
-            if (errorString == nil) {
-                errorLabel.string = "Sorry, could not load the wallpapers."
-            } else {
-                errorLabel.string = errorString!
-                print(errorString as Any);
-            }
-            
-            let fontSize = CGFloat(16), contentSize = self.collectionView.contentSize
-            errorLabel.frame = NSMakeRect(0, (contentSize.height - fontSize) / 2, contentSize.width, fontSize)
-            errorLabel.isEditable = false
-            
-            self.errorLabel = errorLabel
-  
-            self.collectionView.addSubview(errorLabel)
+            self.errorLabelView?.removeFromSuperview()
+            self.errorLabelView = nil
+            self.scrollView?.isHidden = false
+            self.wallpaperPaths = files
+            self.collectionView?.reloadData()
+        }
+    }
+    
+    private func showError(_ message: String) {
+        self.scrollView?.isHidden = true
+        if errorLabelView == nil {
+            let label = NSTextField(labelWithString: message)
+            label.alignment = .center
+            label.font = NSFont.systemFont(ofSize: 15)
+            label.frame = NSRect(x: 20, y: 220, width: 400, height: 40)
+            self.view.addSubview(label)
+            self.errorLabelView = label
+        } else {
+            self.errorLabelView?.stringValue = message
+        }
+    }
+    
+    // NSCollectionViewDataSource
+    func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
+        return wallpaperPaths.count
+    }
+    
+    func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
+        let item = collectionView.makeItem(withIdentifier: NSUserInterfaceItemIdentifier("WallpaperItem"), for: indexPath)
+        if let wallpaperItem = item as? WallpaperItem {
+            let path = wallpaperPaths[indexPath.item]
+            wallpaperItem.setup(path: path)
+        }
+        return item
+    }
+    
+    func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
+        if let indexPath = indexPaths.first {
+            let path = wallpaperPaths[indexPath.item]
+            print("Showing wallpaper in Finder: \(path)")
+            let url = URL(fileURLWithPath: path)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         }
     }
 }
 
-class WallpaperItem : NSCollectionViewItem {
-    var wallpaperView: NSImageView?
-    var path : String?
+class WallpaperItem: NSCollectionViewItem {
+    var path: String?
+    private var imageLayer: CALayer?
     
     override func loadView() {
-        self.wallpaperView = NSImageView(frame: NSZeroRect)
-        self.view = self.wallpaperView!
+        let cardWidth: CGFloat = 416
+        let cardHeight: CGFloat = round(cardWidth * (9.0 / 16.0))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: cardWidth, height: cardHeight))
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.clear.cgColor
+        container.layer?.cornerRadius = 10
+        container.layer?.masksToBounds = true
+        container.layer?.borderColor = NSColor.separatorColor.cgColor
+        container.layer?.borderWidth = 1
+        
+        let imgLayer = CALayer()
+        imgLayer.frame = container.bounds
+        imgLayer.contentsGravity = .resizeAspectFill
+        imgLayer.masksToBounds = true
+        container.layer?.addSublayer(imgLayer)
+        self.imageLayer = imgLayer
+        
+        self.view = container
     }
     
-    func setImage(_ image: NSImage, path: String) {
+    func setup(path: String) {
+        loadViewIfNeeded()
         self.path = path
-        self.wallpaperView!.image = image
+        self.view.toolTip = (path as NSString).lastPathComponent + "\n" + path
+        if let img = NSImage(byReferencingFile: path) {
+            self.imageLayer?.contents = img
+        }
     }
     
-    override var isSelected : Bool {
+    override var isSelected: Bool {
         didSet {
-            if (isSelected && self.path != nil) {
-                print("Showing path: \(String(describing: self.path))")
-                let fileURL = URL(fileURLWithPath: self.path!)
-                NSWorkspace.shared().activateFileViewerSelecting([ fileURL ])
+            self.view.layer?.borderColor = isSelected ? NSColor.controlAccentColor.cgColor : NSColor.separatorColor.cgColor
+            self.view.layer?.borderWidth = isSelected ? 3 : 1
+            if isSelected, let path = self.path {
+                let url = URL(fileURLWithPath: path)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
             }
         }
     }
